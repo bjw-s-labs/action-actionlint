@@ -1,0 +1,86 @@
+---
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+name: Create Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag name (e.g. v1.0.0)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  create-release:
+    name: Create Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Validate tag format
+        shell: bash
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |-
+          if ! [[ "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Error: Tag must match vx.x.x format (e.g., v1.0.0)"
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: main
+          token: ${{ secrets.FORGEJO_TOKEN }}
+
+      - name: Create and push tags
+        shell: bash
+        env:
+          TAG: ${{ inputs.tag }}
+          CI_TAG_AUTHOR: lab-assistant
+          CI_TAG_EMAIL: lab-assistant@git.bjw-s.dev
+        run: |-
+          VERSION="${TAG#v}"
+          MAJOR="${VERSION%%.*}"
+          MINOR="${VERSION#*.}"
+          MINOR="${MINOR%%.*}"
+          git config --local user.email "${{ env.CI_TAG_EMAIL }}"
+          git config --local user.name "${{ env.CI_TAG_AUTHOR }}"
+          git tag "$TAG"
+          git push origin "$TAG"
+          git tag "v$MAJOR.$MINOR" "$TAG"
+          git push origin "v$MAJOR.$MINOR" --force
+          git tag "v$MAJOR" "$TAG"
+          git push origin "v$MAJOR" --force
+
+      - name: Create Forgejo release
+        shell: bash
+        env:
+          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+          TAG: ${{ inputs.tag }}
+        run: |-
+          jq -n \
+            --arg tag_name "$TAG" \
+            '{tag_name: $tag_name, name: $tag_name}' \
+          | curl -sS -X POST \
+            "${{ github.server_url }}/api/v1/repos/${{ github.repository }}/releases" \
+            -H "Authorization: token $FORGEJO_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d @-
+
+      - name: Create GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.gh_mirror_token }}
+          TAG: ${{ inputs.tag }}
+        run: |-
+          jq -n \
+            --arg tag_name "$TAG" \
+            '{tag_name: $tag_name, name: $tag_name}' \
+          | curl -sS -X POST \
+            "https://api.github.com/repos/bjw-s-labs/action-actionlint/releases" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d @-
